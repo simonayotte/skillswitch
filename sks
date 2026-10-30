@@ -1,0 +1,120 @@
+#!/usr/bin/env zsh
+# skillswitch (sks) — toggle agent skills on/off for every harness.
+# A skill is off when its SKILL.md is renamed to SKILL.md.disabled.
+setopt extended_glob null_glob
+
+dir=${SKILLS_DIR:-$HOME/.agents/skills}
+categories_file=${SKILLS_CATEGORIES:-$HOME/.agents/skill-categories}
+self=${0:A}
+on=$'\e[32m●\e[0m' off=$'\e[31m●\e[0m' mixed=$'\e[33m●\e[0m'
+bold=$'\e[1m' dim=$'\e[2m' reset=$'\e[0m'
+
+usage() {
+  cat <<EOF
+Usage: sks                     open the picker (jk move · hl page · space toggle · e edit · q quit)
+       sks ls                  list categories and skills with their state
+       sks on|off <name>...    turn skills or categories on/off ("ui" or "@ui")
+       sks edit                edit categories in \$EDITOR
+
+Skills:     \$SKILLS_DIR (default ~/.agents/skills)
+Categories: \$SKILLS_CATEGORIES (default ~/.agents/skill-categories)
+            one per line: <category>: <skill names or globs>
+EOF
+}
+
+all_skills() { local d; for d in $dir/*(/); do [[ -f $d/SKILL.md || -f $d/SKILL.md.disabled ]] && print ${d:t}; done }
+is_on() { [[ -f $dir/$1/SKILL.md ]] }
+category_names() { [[ -f $categories_file ]] && sed -nE 's/^([A-Za-z0-9_-]+):.*/\1/p' $categories_file }
+
+category_members() {
+  local pats=(${=$(sed -nE "s/^$1:(.*)/\1/p" $categories_file)}) n p
+  for n in $(all_skills); do
+    for p in $pats; do [[ $n == ${~p} ]] && { print $n; break }; done
+  done
+  return 0
+}
+
+set_state() { # set_state on|off <skill>
+  local f=$dir/$2/SKILL.md
+  if [[ $1 == on ]]; then [[ -f $f.disabled ]] && mv $f.disabled $f
+  else [[ -f $f ]] && mv $f $f.disabled; fi
+  return 0
+}
+
+resolve() { # skill or category name → skill names
+  local name=${1#@}
+  if [[ $1 != @* && -d $dir/$1 ]]; then print $1
+  elif category_names | grep -qx -- $name; then category_members $name
+  else print -u2 "sks: no skill or category named '$1'"; return 1; fi
+}
+
+count_on() { local n cnt=0; for n; do is_on $n && ((cnt++)); done; print $cnt }
+
+dot() { # dot <skill>...: colored state of one skill or a whole category
+  local cnt=$(count_on $@)
+  if (( cnt == $# )); then print -n $on; elif (( cnt == 0 )); then print -n $off; else print -n $mixed; fi
+}
+
+list() { # <id>\t<display>: categories with their skills, then uncategorized skills
+  local c n i members categorized=()
+  for c in $(category_names); do
+    members=($(category_members $c))
+    print "@$c\t$(dot $members) $bold$c$reset $dim$(count_on $members)/$#members$reset"
+    for (( i = 1; i <= $#members; i++ )); do
+      n=$members[i]
+      print "$n\t  $dim$( (( i == $#members )) && print └ || print ├)$reset $(dot $n) $n"
+    done
+    categorized+=($members)
+  done
+  for n in $(all_skills); do
+    (( $categorized[(Ie)$n] )) || print "$n\t$(dot $n) $n"
+  done
+}
+
+toggle() { # a category turns all on, or all off when already all on
+  local members=($(resolve $1)) n state=off
+  for n in $members; do is_on $n || state=on; done
+  for n in $members; do set_state $state $n; done
+}
+
+preview() {
+  local n
+  if [[ $1 == @* ]]; then for n in $(category_members ${1#@}); do print "$(dot $n) $n"; done
+  else cat $dir/$1/SKILL.md* | head -40; fi
+}
+
+edit() {
+  [[ -f $categories_file ]] || print '# <category>: <skill names or globs>, e.g.\n# ui: animate* better-*' > $categories_file
+  ${=EDITOR:-vi} $categories_file
+}
+
+pick() {
+  local reload="reload-sync(${(q)self} _list)"
+  list | fzf --ansi --no-sort --track --layout=reverse --no-input \
+    --delimiter=$'\t' --with-nth=2 \
+    --border=rounded --border-label=' Agent skills ' --border-label-pos=3 \
+    --header='jk move · hl page · space toggle · e edit · q quit' \
+    --bind 'j:down,k:up,h:page-up,l:page-down,q:abort' \
+    --bind "space:execute-silent(${(q)self} _toggle {1})+$reload+refresh-preview" \
+    --bind "e:execute(${(q)self} edit)+$reload" \
+    --preview "${(q)self} _preview {1}" >/dev/null
+  return 0
+}
+
+case $1 in
+  '') pick ;;
+  ls|list) list | cut -f2 ;;
+  on|off)
+    local state=$1 arg n names; shift
+    (( $# )) || { usage; exit 1 }
+    for arg; do
+      names=($(resolve $arg)) || exit 1
+      for n in $names; do set_state $state $n && print "$(dot $n) $n"; done
+    done ;;
+  edit) edit ;;
+  _list) list ;;
+  _toggle) toggle $2 ;;
+  _preview) preview $2 ;;
+  -h|--help|help) usage ;;
+  *) usage; exit 1 ;;
+esac
