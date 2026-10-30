@@ -1,0 +1,96 @@
+#!/usr/bin/env zsh
+# skills — toggle agent skills on/off for every harness.
+# A skill is off when its SKILL.md is renamed to SKILL.md.disabled.
+setopt extended_glob null_glob
+
+dir=${SKILLS_DIR:-$HOME/.agents/skills}
+groups_file=${SKILLS_GROUPS:-$HOME/.agents/skill-groups}
+self=${0:A}
+on=$'\e[32m●\e[0m' off=$'\e[31m●\e[0m' mixed=$'\e[33m●\e[0m'
+
+usage() {
+  cat <<EOF
+Usage: skills                     open the picker (jk move · hl page · space toggle · q quit)
+       skills ls                  list groups and skills with their state
+       skills on|off <name>...    turn skills or groups on/off (groups: "ui" or "@ui")
+
+Skills: \$SKILLS_DIR (default ~/.agents/skills)
+Groups: \$SKILLS_GROUPS (default ~/.agents/skill-groups), one per line: <group>: <names or globs>
+EOF
+}
+
+all_skills() { local d; for d in $dir/*(/); do [[ -f $d/SKILL.md || -f $d/SKILL.md.disabled ]] && print ${d:t}; done }
+is_on() { [[ -f $dir/$1/SKILL.md ]] }
+group_names() { [[ -f $groups_file ]] && sed -nE 's/^([A-Za-z0-9_-]+):.*/\1/p' $groups_file }
+
+group_members() {
+  local pats=(${=$(sed -nE "s/^$1:(.*)/\1/p" $groups_file)}) n p
+  for n in $(all_skills); do
+    for p in $pats; do [[ $n == ${~p} ]] && { print $n; break }; done
+  done
+}
+
+set_state() { # set_state on|off <skill>
+  local f=$dir/$2/SKILL.md
+  if [[ $1 == on ]]; then [[ -f $f.disabled ]] && mv $f.disabled $f
+  else [[ -f $f ]] && mv $f $f.disabled; fi
+  return 0
+}
+
+resolve() { # skill or group name → skill names
+  local name=${1#@}
+  if [[ $1 != @* && -d $dir/$1 ]]; then print $1
+  elif group_names | grep -qx -- $name; then group_members $name
+  else print -u2 "skills: no skill or group named '$1'"; return 1; fi
+}
+
+dot() { # dot <skill>...: colored state of one skill or a whole group
+  local n cnt=0
+  for n; do is_on $n && ((cnt++)); done
+  if (( cnt == $# )); then print -n $on; elif (( cnt == 0 )); then print -n $off; else print -n $mixed; fi
+}
+
+list() {
+  local g n
+  for g in $(group_names); do print "$(dot $(group_members $g)) @$g"; done
+  for n in $(all_skills); do print "$(dot $n) $n"; done
+}
+
+toggle() { # a group turns all on, or all off when already all on
+  local members=($(resolve $1)) n state=off
+  for n in $members; do is_on $n || state=on; done
+  for n in $members; do set_state $state $n; done
+}
+
+preview() {
+  local n
+  if [[ $1 == @* ]]; then for n in $(group_members ${1#@}); do print "$(dot $n) $n"; done
+  else cat $dir/$1/SKILL.md* | head -40; fi
+}
+
+pick() {
+  list | fzf --ansi --no-sort --track --layout=reverse --no-input \
+    --border=rounded --border-label=' Agent skills ' --border-label-pos=3 \
+    --header='jk move · hl page · space toggle · q quit' \
+    --bind 'j:down,k:up,h:page-up,l:page-down,q:abort' \
+    --bind "space:execute-silent(${(q)self} _toggle {2})+reload-sync(${(q)self} _list)+refresh-preview" \
+    --preview "${(q)self} _preview {2}" >/dev/null
+  return 0
+}
+
+case $1 in
+  '') pick ;;
+  ls|list) list ;;
+  on|off)
+    local state=$1 arg n names; shift
+    (( $# )) || { usage; exit 1 }
+    for arg; do
+      names=($(resolve $arg)) || exit 1
+      for n in $names; do set_state $state $n && print "$(dot $n) $n"; done
+    done ;;
+  _list) list ;;
+  _toggle) toggle $2 ;;
+  _preview) preview $2 ;;
+  -h|--help|help) usage ;;
+  *) usage; exit 1 ;;
+esac
